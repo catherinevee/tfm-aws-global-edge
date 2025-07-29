@@ -1,0 +1,106 @@
+repos:
+- repo: https://github.com/antonbabenko/pre-commit-terraform
+  rev: v1.88.0
+  hooks:
+  - id: terraform_fmt
+    args:
+    - --args=-no-color
+    - --args=-diff
+    - --args=-write=true
+  - id: terraform_validate
+    args:
+    - --args=-no-color
+  - id: terraform_docs
+    args:
+    - --args=--sort-by-required
+    - --args=--sort-inputs-by-required
+  - id: terraform_tflint
+    args:
+    - --args=--no-color
+  - id: terraform_checkov
+    args:
+    - --args=--skip-path=test/
+    - --args=--skip-path=examples/
+  - id: terraform_infracost_breakdown
+    args:
+    - --args=--format=json
+    - --args=--out-file=infracost.json
+
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v4.5.0
+  hooks:
+  - id: check-merge-conflict
+  - id: check-yaml
+  - id: check-added-large-files
+  - id: check-case-conflict
+  - id: check-json
+  - id: check-merge-conflict
+  - id: check-toml
+  - id: end-of-file-fixer
+  - id: trailing-whitespace
+  - id: check-docstring-first
+  - id: check-executables-have-shebangs
+  - id: check-json
+  - id: check-merge-conflict
+  - id: check-yaml
+  - id: debug-statements
+  - id: detect-private-key
+  - id: end-of-file-fixer
+  - id: name-tests-test
+  - id: requirements-txt-fixer
+  - id: trailing-whitespace
+
+- repo: https://github.com/psf/black
+  rev: 23.12.1
+  hooks:
+  - id: black
+    language_version: python3
+
+- repo: https://github.com/pycqa/isort
+  rev: 5.13.2
+  hooks:
+  - id: isort
+    args: [ "--profile", "black" ]
+
+- repo: https://github.com/pycqa/flake8
+  rev: 7.0.0
+  hooks:
+  - id: flake8
+    args: [ --max-line-length=88, --extend-ignore=E203, W503 ]
+
+- repo: https://github.com/pre-commit/mirrors-mypy
+  rev: v1.8.0
+  hooks:
+  - id: mypy
+    additional_dependencies: [ types-all ]
+
+- repo: https://github.com/terraform-linters/tflint
+  rev: v0.48.0
+  hooks:
+  - id: tflint
+    args:
+    - --no-color
+
+- repo: https://github.com/aquasecurity/trivy
+  rev: v0.48.4
+  hooks:
+  - id: trivy_fs
+    args: [ --severity, HIGH, CRITICAL ]
+
+- repo: https://github.com/checkov/checkov
+  rev: 3.1.85
+  hooks:
+  - id: checkov
+    args: [ --framework, terraform, --skip-path, test/, --skip-path, examples/ ]
+
+- repo: https://github.com/infracost/infracost
+  rev: v0.10.35
+  hooks:
+  - id: infracost_breakdown
+    args: [ --format, json, --out-file, infracost.json ]
+
+- repo: https://github.com/terraform-docs/terraform-docs
+  rev: v0.16.0
+  hooks:
+  - id: terraform_docs
+    args: [ --sort-by-required, --sort-inputs-by-required ]
