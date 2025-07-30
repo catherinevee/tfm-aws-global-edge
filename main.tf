@@ -27,12 +27,50 @@ resource "aws_acm_certificate" "main" {
   domain_name               = var.ssl_certificate_domain
   subject_alternative_names = var.ssl_certificate_subject_alternative_names
   validation_method         = var.ssl_certificate_validation_method
+  certificate_authority_arn = var.ssl_certificate_authority_arn
+  certificate_body          = var.ssl_certificate_body
+  certificate_chain         = var.ssl_certificate_chain
+  private_key               = var.ssl_certificate_private_key
+  key_algorithm             = var.ssl_certificate_key_algorithm
 
   lifecycle {
     create_before_destroy = true
   }
 
-  tags = local.common_tags
+  tags = merge(
+    local.common_tags,
+    var.ssl_certificate_tags
+  )
+}
+
+# Certificate validation records
+resource "aws_route53_record" "certificate_validation" {
+  for_each = var.enable_ssl_certificate && var.ssl_certificate_domain != null && var.ssl_certificate_validation_method == "DNS" && var.enable_route53 ? {
+    for dvo in aws_acm_certificate.main[0].domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  } : {}
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = aws_route53_zone.main[0].zone_id
+}
+
+# Certificate validation
+resource "aws_acm_certificate_validation" "main" {
+  count = var.enable_ssl_certificate && var.ssl_certificate_domain != null && var.ssl_certificate_validation_method == "DNS" && var.enable_route53 ? 1 : 0
+
+  certificate_arn         = aws_acm_certificate.main[0].arn
+  validation_record_fqdns = [for record in aws_route53_record.certificate_validation : record.fqdn]
+
+  timeouts {
+    create = var.ssl_certificate_validation_timeout
+  }
 }
 
 # =============================================================================
@@ -56,52 +94,191 @@ resource "aws_wafv2_web_acl" "main" {
 
   name        = "${local.name_prefix}-${var.waf_name}"
   description = var.waf_description
-  scope       = "CLOUDFRONT"
+  scope       = var.waf_scope
 
-  default_action {
-    allow {}
+  # Default action
+  dynamic "default_action" {
+    for_each = [var.waf_default_action]
+    content {
+      dynamic "allow" {
+        for_each = default_action.value.type == "ALLOW" ? [default_action.value] : []
+        content {
+          dynamic "custom_request_handling" {
+            for_each = lookup(allow.value, "custom_request_handling", null) != null ? [allow.value.custom_request_handling] : []
+            content {
+              dynamic "insert_header" {
+                for_each = custom_request_handling.value.insert_header
+                content {
+                  name  = insert_header.value.name
+                  value = insert_header.value.value
+                }
+              }
+            }
+          }
+        }
+      }
+      dynamic "block" {
+        for_each = default_action.value.type == "BLOCK" ? [default_action.value] : []
+        content {
+          dynamic "custom_response" {
+            for_each = lookup(block.value, "custom_response", null) != null ? [block.value.custom_response] : []
+            content {
+              response_code = custom_response.value.response_code
+              dynamic "response_header" {
+                for_each = lookup(custom_response.value, "response_header", [])
+                content {
+                  name  = response_header.value.name
+                  value = response_header.value.value
+                }
+              }
+              custom_response_body_key = lookup(custom_response.value, "custom_response_body_key", null)
+            }
+          }
+        }
+      }
+    }
   }
 
+  # Rules
   dynamic "rule" {
     for_each = var.waf_rules
     content {
       name     = rule.value.name
       priority = rule.value.priority
 
-      action {
-        dynamic "allow" {
-          for_each = rule.value.action.type == "ALLOW" ? [1] : []
-          content {}
-        }
-        dynamic "block" {
-          for_each = rule.value.action.type == "BLOCK" ? [1] : []
-          content {}
-        }
-        dynamic "count" {
-          for_each = rule.value.action.type == "COUNT" ? [1] : []
-          content {}
+      # Rule action
+      dynamic "action" {
+        for_each = [rule.value.action]
+        content {
+          dynamic "allow" {
+            for_each = action.value.type == "ALLOW" ? [action.value] : []
+            content {
+              dynamic "custom_request_handling" {
+                for_each = lookup(allow.value, "custom_request_handling", null) != null ? [allow.value.custom_request_handling] : []
+                content {
+                  dynamic "insert_header" {
+                    for_each = custom_request_handling.value.insert_header
+                    content {
+                      name  = insert_header.value.name
+                      value = insert_header.value.value
+                    }
+                  }
+                }
+              }
+            }
+          }
+          dynamic "block" {
+            for_each = action.value.type == "BLOCK" ? [action.value] : []
+            content {
+              dynamic "custom_response" {
+                for_each = lookup(block.value, "custom_response", null) != null ? [block.value.custom_response] : []
+                content {
+                  response_code = custom_response.value.response_code
+                  dynamic "response_header" {
+                    for_each = lookup(custom_response.value, "response_header", [])
+                    content {
+                      name  = response_header.value.name
+                      value = response_header.value.value
+                    }
+                  }
+                  custom_response_body_key = lookup(custom_response.value, "custom_response_body_key", null)
+                }
+              }
+            }
+          }
+          dynamic "count" {
+            for_each = action.value.type == "COUNT" ? [action.value] : []
+            content {
+              dynamic "custom_request_handling" {
+                for_each = lookup(count.value, "custom_request_handling", null) != null ? [count.value.custom_request_handling] : []
+                content {
+                  dynamic "insert_header" {
+                    for_each = custom_request_handling.value.insert_header
+                    content {
+                      name  = insert_header.value.name
+                      value = insert_header.value.value
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
 
+      # Rule statement
       dynamic "statement" {
         for_each = rule.value.statement != null ? [rule.value.statement] : []
         content {
+          # Managed rule group statement
           dynamic "managed_rule_group_statement" {
             for_each = statement.value.managed_rule_group_statement != null ? [statement.value.managed_rule_group_statement] : []
             content {
               name        = managed_rule_group_statement.value.name
               vendor_name = managed_rule_group_statement.value.vendor_name
+              
+              dynamic "rule_action_override" {
+                for_each = lookup(managed_rule_group_statement.value, "rule_action_override", [])
+                content {
+                  name = rule_action_override.value.name
+                  dynamic "action_to_use" {
+                    for_each = [rule_action_override.value.action_to_use]
+                    content {
+                      dynamic "allow" {
+                        for_each = action_to_use.value.type == "ALLOW" ? [action_to_use.value] : []
+                        content {}
+                      }
+                      dynamic "block" {
+                        for_each = action_to_use.value.type == "BLOCK" ? [action_to_use.value] : []
+                        content {}
+                      }
+                      dynamic "count" {
+                        for_each = action_to_use.value.type == "COUNT" ? [action_to_use.value] : []
+                        content {}
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
 
+          # Rate based statement
           dynamic "rate_based_statement" {
             for_each = statement.value.rate_based_statement != null ? [statement.value.rate_based_statement] : []
             content {
               limit              = rate_based_statement.value.limit
               aggregate_key_type = rate_based_statement.value.aggregate_key_type
+              
+              dynamic "custom_key" {
+                for_each = lookup(rate_based_statement.value, "custom_key", null) != null ? [rate_based_statement.value.custom_key] : []
+                content {
+                  dynamic "header" {
+                    for_each = lookup(custom_key.value, "header", null) != null ? [custom_key.value.header] : []
+                    content {
+                      name = header.value.name
+                    }
+                  }
+                  dynamic "cookie" {
+                    for_each = lookup(custom_key.value, "cookie", null) != null ? [custom_key.value.cookie] : []
+                    content {
+                      name = cookie.value.name
+                    }
+                  }
+                  dynamic "query_string" {
+                    for_each = lookup(custom_key.value, "query_string", null) != null ? [custom_key.value.query_string] : []
+                    content {}
+                  }
+                  dynamic "uri_path" {
+                    for_each = lookup(custom_key.value, "uri_path", null) != null ? [custom_key.value.uri_path] : []
+                    content {}
+                  }
+                }
+              }
             }
           }
 
+          # Geo match statement
           dynamic "geo_match_statement" {
             for_each = statement.value.geo_match_statement != null ? [statement.value.geo_match_statement] : []
             content {
@@ -109,32 +286,250 @@ resource "aws_wafv2_web_acl" "main" {
             }
           }
 
+          # IP set reference statement
           dynamic "ip_set_reference_statement" {
             for_each = statement.value.ip_set_reference_statement != null ? [statement.value.ip_set_reference_statement] : []
             content {
               arn = ip_set_reference_statement.value.arn
+              ip_set_forwarded_ip_config {
+                header_name                 = lookup(ip_set_reference_statement.value, "header_name", null)
+                fallback_behavior          = lookup(ip_set_reference_statement.value, "fallback_behavior", "MATCH")
+                position                   = lookup(ip_set_reference_statement.value, "position", "FIRST")
+              }
             }
           }
 
+          # Byte match statement
           dynamic "byte_match_statement" {
             for_each = statement.value.byte_match_statement != null ? [statement.value.byte_match_statement] : []
             content {
               search_string         = byte_match_statement.value.search_string
               positional_constraint = byte_match_statement.value.positional_constraint
 
-              field_to_match {
-                uri_path {}
+              dynamic "field_to_match" {
+                for_each = [byte_match_statement.value.field_to_match]
+                content {
+                  dynamic "uri_path" {
+                    for_each = field_to_match.value.uri_path != null ? [field_to_match.value.uri_path] : []
+                    content {}
+                  }
+                  dynamic "query_string" {
+                    for_each = field_to_match.value.query_string != null ? [field_to_match.value.query_string] : []
+                    content {}
+                  }
+                  dynamic "header" {
+                    for_each = field_to_match.value.header != null ? [field_to_match.value.header] : []
+                    content {
+                      name = header.value.name
+                    }
+                  }
+                  dynamic "method" {
+                    for_each = field_to_match.value.method != null ? [field_to_match.value.method] : []
+                    content {}
+                  }
+                  dynamic "body" {
+                    for_each = field_to_match.value.body != null ? [field_to_match.value.body] : []
+                    content {
+                      oversize_handling = lookup(body.value, "oversize_handling", "CONTINUE")
+                    }
+                  }
+                }
               }
 
-              text_transformation {
-                priority = byte_match_statement.value.text_transformation.priority
-                type     = byte_match_statement.value.text_transformation.type
+                             dynamic "text_transformation" {
+                 for_each = byte_match_statement.value.text_transformation != null ? byte_match_statement.value.text_transformation : []
+                 content {
+                   priority = text_transformation.value.priority
+                   type     = text_transformation.value.type
+                 }
+               }
+            }
+          }
+
+          # Size constraint statement
+          dynamic "size_constraint_statement" {
+            for_each = statement.value.size_constraint_statement != null ? [statement.value.size_constraint_statement] : []
+            content {
+              comparison_operator = size_constraint_statement.value.comparison_operator
+              size                = size_constraint_statement.value.size
+
+              dynamic "field_to_match" {
+                for_each = [size_constraint_statement.value.field_to_match]
+                content {
+                  dynamic "uri_path" {
+                    for_each = field_to_match.value.uri_path != null ? [field_to_match.value.uri_path] : []
+                    content {}
+                  }
+                  dynamic "query_string" {
+                    for_each = field_to_match.value.query_string != null ? [field_to_match.value.query_string] : []
+                    content {}
+                  }
+                  dynamic "header" {
+                    for_each = field_to_match.value.header != null ? [field_to_match.value.header] : []
+                    content {
+                      name = header.value.name
+                    }
+                  }
+                  dynamic "method" {
+                    for_each = field_to_match.value.method != null ? [field_to_match.value.method] : []
+                    content {}
+                  }
+                  dynamic "body" {
+                    for_each = field_to_match.value.body != null ? [field_to_match.value.body] : []
+                    content {
+                      oversize_handling = lookup(body.value, "oversize_handling", "CONTINUE")
+                    }
+                  }
+                }
               }
+
+                             dynamic "text_transformation" {
+                 for_each = size_constraint_statement.value.text_transformation != null ? size_constraint_statement.value.text_transformation : []
+                 content {
+                   priority = text_transformation.value.priority
+                   type     = text_transformation.value.type
+                 }
+               }
+            }
+          }
+
+          # SQL injection match statement
+          dynamic "sql_injection_match_statement" {
+            for_each = statement.value.sql_injection_match_statement != null ? [statement.value.sql_injection_match_statement] : []
+            content {
+              dynamic "field_to_match" {
+                for_each = [sql_injection_match_statement.value.field_to_match]
+                content {
+                  dynamic "uri_path" {
+                    for_each = field_to_match.value.uri_path != null ? [field_to_match.value.uri_path] : []
+                    content {}
+                  }
+                  dynamic "query_string" {
+                    for_each = field_to_match.value.query_string != null ? [field_to_match.value.query_string] : []
+                    content {}
+                  }
+                  dynamic "header" {
+                    for_each = field_to_match.value.header != null ? [field_to_match.value.header] : []
+                    content {
+                      name = header.value.name
+                    }
+                  }
+                  dynamic "method" {
+                    for_each = field_to_match.value.method != null ? [field_to_match.value.method] : []
+                    content {}
+                  }
+                  dynamic "body" {
+                    for_each = field_to_match.value.body != null ? [field_to_match.value.body] : []
+                    content {
+                      oversize_handling = lookup(body.value, "oversize_handling", "CONTINUE")
+                    }
+                  }
+                }
+              }
+
+                             dynamic "text_transformation" {
+                 for_each = sql_injection_match_statement.value.text_transformation != null ? sql_injection_match_statement.value.text_transformation : []
+                 content {
+                   priority = text_transformation.value.priority
+                   type     = text_transformation.value.type
+                 }
+               }
+            }
+          }
+
+          # XSS match statement
+          dynamic "xss_match_statement" {
+            for_each = statement.value.xss_match_statement != null ? [statement.value.xss_match_statement] : []
+            content {
+              dynamic "field_to_match" {
+                for_each = [xss_match_statement.value.field_to_match]
+                content {
+                  dynamic "uri_path" {
+                    for_each = field_to_match.value.uri_path != null ? [field_to_match.value.uri_path] : []
+                    content {}
+                  }
+                  dynamic "query_string" {
+                    for_each = field_to_match.value.query_string != null ? [field_to_match.value.query_string] : []
+                    content {}
+                  }
+                  dynamic "header" {
+                    for_each = field_to_match.value.header != null ? [field_to_match.value.header] : []
+                    content {
+                      name = header.value.name
+                    }
+                  }
+                  dynamic "method" {
+                    for_each = field_to_match.value.method != null ? [field_to_match.value.method] : []
+                    content {}
+                  }
+                  dynamic "body" {
+                    for_each = field_to_match.value.body != null ? [field_to_match.value.body] : []
+                    content {
+                      oversize_handling = lookup(body.value, "oversize_handling", "CONTINUE")
+                    }
+                  }
+                }
+              }
+
+                             dynamic "text_transformation" {
+                 for_each = xss_match_statement.value.text_transformation != null ? xss_match_statement.value.text_transformation : []
+                 content {
+                   priority = text_transformation.value.priority
+                   type     = text_transformation.value.type
+                 }
+               }
+            }
+          }
+
+          # Regex pattern set reference statement
+          dynamic "regex_pattern_set_reference_statement" {
+            for_each = statement.value.regex_pattern_set_reference_statement != null ? [statement.value.regex_pattern_set_reference_statement] : []
+            content {
+              arn = regex_pattern_set_reference_statement.value.arn
+              
+              dynamic "field_to_match" {
+                for_each = [regex_pattern_set_reference_statement.value.field_to_match]
+                content {
+                  dynamic "uri_path" {
+                    for_each = field_to_match.value.uri_path != null ? [field_to_match.value.uri_path] : []
+                    content {}
+                  }
+                  dynamic "query_string" {
+                    for_each = field_to_match.value.query_string != null ? [field_to_match.value.query_string] : []
+                    content {}
+                  }
+                  dynamic "header" {
+                    for_each = field_to_match.value.header != null ? [field_to_match.value.header] : []
+                    content {
+                      name = header.value.name
+                    }
+                  }
+                  dynamic "method" {
+                    for_each = field_to_match.value.method != null ? [field_to_match.value.method] : []
+                    content {}
+                  }
+                  dynamic "body" {
+                    for_each = field_to_match.value.body != null ? [field_to_match.value.body] : []
+                    content {
+                      oversize_handling = lookup(body.value, "oversize_handling", "CONTINUE")
+                    }
+                  }
+                }
+              }
+
+                             dynamic "text_transformation" {
+                 for_each = regex_pattern_set_reference_statement.value.text_transformation != null ? regex_pattern_set_reference_statement.value.text_transformation : []
+                 content {
+                   priority = text_transformation.value.priority
+                   type     = text_transformation.value.type
+                 }
+               }
             }
           }
         }
       }
 
+      # Rule visibility config
       visibility_config {
         cloudwatch_metrics_enabled = rule.value.visibility_config.cloudwatch_metrics_enabled
         metric_name                = rule.value.visibility_config.metric_name
@@ -143,13 +538,27 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
+  # Custom response bodies
+  dynamic "custom_response_body" {
+    for_each = var.waf_custom_response_bodies
+    content {
+      key          = custom_response_body.value.key
+      content_type = custom_response_body.value.content_type
+      content      = custom_response_body.value.content
+    }
+  }
+
+  # Visibility config
   visibility_config {
     cloudwatch_metrics_enabled = var.waf_visibility_config.cloudwatch_metrics_enabled
     metric_name                = var.waf_visibility_config.metric_name
     sampled_requests_enabled   = var.waf_visibility_config.sampled_requests_enabled
   }
 
-  tags = local.common_tags
+  tags = merge(
+    local.common_tags,
+    var.waf_tags
+  )
 }
 
 # =============================================================================
@@ -163,7 +572,11 @@ resource "aws_cloudfront_distribution" "main" {
   is_ipv6_enabled     = var.cloudfront_is_ipv6_enabled
   price_class         = var.cloudfront_price_class
   aliases             = var.cloudfront_aliases
-  comment             = "Edge Network CloudFront Distribution for ${var.project_name}"
+  comment             = var.cloudfront_comment
+  default_root_object = var.cloudfront_default_root_object
+  http_version        = var.cloudfront_http_version
+  retain_on_delete    = var.cloudfront_retain_on_delete
+  wait_for_deployment = var.cloudfront_wait_for_deployment
 
   # Origins
   dynamic "origin" {
@@ -172,6 +585,7 @@ resource "aws_cloudfront_distribution" "main" {
       domain_name = origin.value.domain_name
       origin_id   = origin.value.origin_id
       origin_path = origin.value.origin_path
+      origin_access_control_id = lookup(origin.value, "origin_access_control_id", null)
 
       dynamic "custom_origin_config" {
         for_each = origin.value.custom_origin_config != null ? [origin.value.custom_origin_config] : []
@@ -180,6 +594,8 @@ resource "aws_cloudfront_distribution" "main" {
           https_port               = custom_origin_config.value.https_port
           origin_protocol_policy   = custom_origin_config.value.origin_protocol_policy
           origin_ssl_protocols     = custom_origin_config.value.origin_ssl_protocols
+          origin_read_timeout      = lookup(custom_origin_config.value, "origin_read_timeout", 30)
+          origin_keepalive_timeout = lookup(custom_origin_config.value, "origin_keepalive_timeout", 5)
         }
       }
 
@@ -197,6 +613,14 @@ resource "aws_cloudfront_distribution" "main" {
           value = custom_header.value.value
         }
       }
+
+      dynamic "origin_shield" {
+        for_each = origin.value.origin_shield != null ? [origin.value.origin_shield] : []
+        content {
+          enabled              = origin_shield.value.enabled
+          origin_shield_region = origin_shield.value.origin_shield_region
+        }
+      }
     }
   }
 
@@ -210,6 +634,9 @@ resource "aws_cloudfront_distribution" "main" {
     min_ttl                = var.cloudfront_default_cache_behavior.min_ttl
     default_ttl            = var.cloudfront_default_cache_behavior.default_ttl
     max_ttl                = var.cloudfront_default_cache_behavior.max_ttl
+    smooth_streaming       = lookup(var.cloudfront_default_cache_behavior, "smooth_streaming", false)
+    trusted_signers        = lookup(var.cloudfront_default_cache_behavior, "trusted_signers", null)
+    trusted_key_groups     = lookup(var.cloudfront_default_cache_behavior, "trusted_key_groups", null)
 
     dynamic "forwarded_values" {
       for_each = var.cloudfront_default_cache_behavior.forwarded_values != null ? [var.cloudfront_default_cache_behavior.forwarded_values] : []
@@ -225,6 +652,8 @@ resource "aws_cloudfront_distribution" "main" {
 
     cache_policy_id          = var.cloudfront_default_cache_behavior.cache_policy_id
     origin_request_policy_id = var.cloudfront_default_cache_behavior.origin_request_policy_id
+    realtime_log_config_arn  = lookup(var.cloudfront_default_cache_behavior, "realtime_log_config_arn", null)
+    response_headers_policy_id = lookup(var.cloudfront_default_cache_behavior, "response_headers_policy_id", null)
   }
 
   # Ordered cache behaviors
@@ -240,6 +669,9 @@ resource "aws_cloudfront_distribution" "main" {
       min_ttl          = ordered_cache_behavior.value.min_ttl
       default_ttl      = ordered_cache_behavior.value.default_ttl
       max_ttl          = ordered_cache_behavior.value.max_ttl
+      smooth_streaming = lookup(ordered_cache_behavior.value, "smooth_streaming", false)
+      trusted_signers  = lookup(ordered_cache_behavior.value, "trusted_signers", null)
+      trusted_key_groups = lookup(ordered_cache_behavior.value, "trusted_key_groups", null)
 
       dynamic "forwarded_values" {
         for_each = ordered_cache_behavior.value.forwarded_values != null ? [ordered_cache_behavior.value.forwarded_values] : []
@@ -255,6 +687,8 @@ resource "aws_cloudfront_distribution" "main" {
 
       cache_policy_id          = ordered_cache_behavior.value.cache_policy_id
       origin_request_policy_id = ordered_cache_behavior.value.origin_request_policy_id
+      realtime_log_config_arn  = lookup(ordered_cache_behavior.value, "realtime_log_config_arn", null)
+      response_headers_policy_id = lookup(ordered_cache_behavior.value, "response_headers_policy_id", null)
     }
   }
 
@@ -263,8 +697,9 @@ resource "aws_cloudfront_distribution" "main" {
     for_each = var.cloudfront_acm_certificate_arn != null ? [1] : []
     content {
       acm_certificate_arn      = var.cloudfront_acm_certificate_arn
-      ssl_support_method       = "sni-only"
+      ssl_support_method       = var.cloudfront_ssl_support_method
       minimum_protocol_version = var.cloudfront_minimum_protocol_version
+      cloudfront_default_certificate = false
     }
   }
 
@@ -279,7 +714,7 @@ resource "aws_cloudfront_distribution" "main" {
   dynamic "logging_config" {
     for_each = var.enable_access_logs && var.access_logs_bucket != null ? [1] : []
     content {
-      include_cookies = false
+      include_cookies = var.cloudfront_logging_include_cookies
       bucket          = "${var.access_logs_bucket}.s3.amazonaws.com"
       prefix          = var.access_logs_prefix
     }
@@ -294,19 +729,41 @@ resource "aws_cloudfront_distribution" "main" {
   }
 
   # Custom error responses
-  custom_error_response {
-    error_code         = 404
-    response_code      = "200"
-    response_page_path = "/index.html"
+  dynamic "custom_error_response" {
+    for_each = var.cloudfront_custom_error_responses
+    content {
+      error_code            = custom_error_response.value.error_code
+      response_code         = lookup(custom_error_response.value, "response_code", null)
+      response_page_path    = lookup(custom_error_response.value, "response_page_path", null)
+      error_caching_min_ttl = lookup(custom_error_response.value, "error_caching_min_ttl", null)
+    }
   }
 
-  custom_error_response {
-    error_code         = 403
-    response_code      = "200"
-    response_page_path = "/index.html"
+  # Geo restrictions
+  dynamic "restrictions" {
+    for_each = var.cloudfront_geo_restrictions != null ? [var.cloudfront_geo_restrictions] : []
+    content {
+      geo_restriction {
+        restriction_type = restrictions.value.restriction_type
+        locations        = lookup(restrictions.value, "locations", [])
+      }
+    }
   }
 
-  tags = local.common_tags
+  # Default geo restrictions if none specified
+  dynamic "restrictions" {
+    for_each = var.cloudfront_geo_restrictions == null ? [1] : []
+    content {
+      geo_restriction {
+        restriction_type = "none"
+      }
+    }
+  }
+
+  tags = merge(
+    local.common_tags,
+    var.cloudfront_tags
+  )
 
   depends_on = [
     aws_wafv2_web_acl.main
@@ -322,15 +779,32 @@ resource "aws_globalaccelerator_accelerator" "main" {
 
   name            = "${local.name_prefix}-${var.global_accelerator_name}"
   ip_address_type = var.global_accelerator_ip_address_type
-  enabled         = true
+  enabled         = var.global_accelerator_enabled
 
-  attributes {
-    flow_logs_enabled   = true
-    flow_logs_s3_bucket = var.access_logs_bucket
-    flow_logs_s3_prefix = "global-accelerator-logs"
+  # Enhanced attributes
+  dynamic "attributes" {
+    for_each = var.global_accelerator_attributes != null ? [var.global_accelerator_attributes] : []
+    content {
+      flow_logs_enabled   = attributes.value.flow_logs_enabled
+      flow_logs_s3_bucket = attributes.value.flow_logs_s3_bucket
+      flow_logs_s3_prefix = attributes.value.flow_logs_s3_prefix
+    }
   }
 
-  tags = local.common_tags
+  # Default attributes if none specified
+  dynamic "attributes" {
+    for_each = var.global_accelerator_attributes == null ? [1] : []
+    content {
+      flow_logs_enabled   = true
+      flow_logs_s3_bucket = var.access_logs_bucket
+      flow_logs_s3_prefix = "global-accelerator-logs"
+    }
+  }
+
+  tags = merge(
+    local.common_tags,
+    var.global_accelerator_tags
+  )
 }
 
 resource "aws_globalaccelerator_listener" "main" {
@@ -338,6 +812,7 @@ resource "aws_globalaccelerator_listener" "main" {
 
   accelerator_arn = aws_globalaccelerator_accelerator.main[0].id
   protocol        = var.global_accelerator_listeners[count.index].protocol
+  client_affinity = lookup(var.global_accelerator_listeners[count.index], "client_affinity", "NONE")
 
   dynamic "port_range" {
     for_each = var.global_accelerator_listeners[count.index].port_ranges
@@ -352,22 +827,20 @@ resource "aws_globalaccelerator_endpoint_group" "main" {
   count = var.enable_global_accelerator ? length(var.global_accelerator_endpoint_groups) : 0
 
   listener_arn = var.global_accelerator_endpoint_groups[count.index].listener_arn
-  region       = var.global_accelerator_endpoint_groups[count.index].region
 
   health_check_path                = var.global_accelerator_endpoint_groups[count.index].health_check_path
   health_check_protocol            = var.global_accelerator_endpoint_groups[count.index].health_check_protocol
   health_check_port                = var.global_accelerator_endpoint_groups[count.index].health_check_port
   health_check_interval_seconds    = var.global_accelerator_endpoint_groups[count.index].health_check_interval_seconds
-  health_check_timeout_seconds     = var.global_accelerator_endpoint_groups[count.index].health_check_timeout_seconds
-  healthy_threshold_count          = var.global_accelerator_endpoint_groups[count.index].healthy_threshold_count
-  unhealthy_threshold_count        = var.global_accelerator_endpoint_groups[count.index].unhealthy_threshold_count
   traffic_dial_percentage          = var.global_accelerator_endpoint_groups[count.index].traffic_dial_percentage
+  threshold_count                  = lookup(var.global_accelerator_endpoint_groups[count.index], "threshold_count", 3)
 
   dynamic "endpoint_configuration" {
     for_each = var.global_accelerator_endpoint_groups[count.index].endpoint_configurations
     content {
       endpoint_id = endpoint_configuration.value.endpoint_id
       weight      = endpoint_configuration.value.weight
+      client_ip_preservation_enabled = lookup(endpoint_configuration.value, "client_ip_preservation_enabled", false)
     }
   }
 }
@@ -382,8 +855,9 @@ resource "aws_route53_record" "main" {
   zone_id = aws_route53_zone.main[0].zone_id
   name    = var.route53_records[count.index].name
   type    = var.route53_records[count.index].type
-  ttl     = var.route53_records[count.index].ttl
-  records = var.route53_records[count.index].records
+  ttl     = lookup(var.route53_records[count.index], "ttl", null)
+  records = lookup(var.route53_records[count.index], "records", null)
+  set_identifier = lookup(var.route53_records[count.index], "set_identifier", null)
 
   dynamic "alias" {
     for_each = var.route53_records[count.index].alias != null ? [var.route53_records[count.index].alias] : []
@@ -411,9 +885,9 @@ resource "aws_route53_record" "main" {
   dynamic "geolocation_routing_policy" {
     for_each = var.route53_records[count.index].geolocation_routing_policy != null ? [var.route53_records[count.index].geolocation_routing_policy] : []
     content {
-      continent   = geolocation_routing_policy.value.continent
-      country     = geolocation_routing_policy.value.country
-      subdivision = geolocation_routing_policy.value.subdivision
+      continent   = lookup(geolocation_routing_policy.value, "continent", null)
+      country     = lookup(geolocation_routing_policy.value, "country", null)
+      subdivision = lookup(geolocation_routing_policy.value, "subdivision", null)
     }
   }
 
@@ -430,6 +904,40 @@ resource "aws_route53_record" "main" {
       weight = weighted_routing_policy.value.weight
     }
   }
+
+  dynamic "multivalue_answer_routing_policy" {
+    for_each = var.route53_records[count.index].multivalue_answer_routing_policy != null ? [var.route53_records[count.index].multivalue_answer_routing_policy] : []
+    content {
+      multivalue_answer_routing_policy = true
+    }
+  }
+
+  allow_overwrite = lookup(var.route53_records[count.index], "allow_overwrite", false)
+}
+
+# Route 53 Health Checks
+resource "aws_route53_health_check" "main" {
+  count = var.enable_route53 ? length(var.route53_health_checks) : 0
+
+  fqdn              = lookup(var.route53_health_checks[count.index], "fqdn", null)
+  port              = lookup(var.route53_health_checks[count.index], "port", null)
+  type              = var.route53_health_checks[count.index].type
+  resource_path     = lookup(var.route53_health_checks[count.index], "resource_path", null)
+  failure_threshold = lookup(var.route53_health_checks[count.index], "failure_threshold", 3)
+  request_interval  = lookup(var.route53_health_checks[count.index], "request_interval", 30)
+  measure_latency   = lookup(var.route53_health_checks[count.index], "measure_latency", false)
+  invert_healthcheck = lookup(var.route53_health_checks[count.index], "invert_healthcheck", false)
+
+  child_healthchecks = lookup(var.route53_health_checks[count.index], "child_healthchecks", null)
+  child_health_threshold = lookup(var.route53_health_checks[count.index], "child_health_threshold", null)
+  cloudwatch_alarm_name = lookup(var.route53_health_checks[count.index], "cloudwatch_alarm_name", null)
+  cloudwatch_alarm_region = lookup(var.route53_health_checks[count.index], "cloudwatch_alarm_region", null)
+  insufficient_data_health_status = lookup(var.route53_health_checks[count.index], "insufficient_data_health_status", null)
+
+  tags = merge(
+    local.common_tags,
+    lookup(var.route53_health_checks[count.index], "tags", {})
+  )
 }
 
 # =============================================================================
@@ -460,19 +968,50 @@ resource "aws_cloudwatch_metric_alarm" "main" {
   period              = var.cloudwatch_alarms[count.index].period
   statistic           = var.cloudwatch_alarms[count.index].statistic
   threshold           = var.cloudwatch_alarms[count.index].threshold
-  alarm_description   = var.cloudwatch_alarms[count.index].alarm_description
-  alarm_actions       = var.cloudwatch_alarms[count.index].alarm_actions
-  ok_actions          = var.cloudwatch_alarms[count.index].ok_actions
+  alarm_description   = lookup(var.cloudwatch_alarms[count.index], "alarm_description", null)
+  alarm_actions       = lookup(var.cloudwatch_alarms[count.index], "alarm_actions", [])
+  ok_actions          = lookup(var.cloudwatch_alarms[count.index], "ok_actions", [])
+  insufficient_data_actions = lookup(var.cloudwatch_alarms[count.index], "insufficient_data_actions", [])
+  treat_missing_data  = lookup(var.cloudwatch_alarms[count.index], "treat_missing_data", "missing")
+  unit                = lookup(var.cloudwatch_alarms[count.index], "unit", null)
+  extended_statistic  = lookup(var.cloudwatch_alarms[count.index], "extended_statistic", null)
+  datapoints_to_alarm = lookup(var.cloudwatch_alarms[count.index], "datapoints_to_alarm", null)
+  threshold_metric_id = lookup(var.cloudwatch_alarms[count.index], "threshold_metric_id", null)
 
   dynamic "dimensions" {
-    for_each = var.cloudwatch_alarms[count.index].dimensions
+    for_each = lookup(var.cloudwatch_alarms[count.index], "dimensions", [])
     content {
       name  = dimensions.value.name
       value = dimensions.value.value
     }
   }
 
-  tags = local.common_tags
+  dynamic "metric_query" {
+    for_each = lookup(var.cloudwatch_alarms[count.index], "metric_query", [])
+    content {
+      id          = metric_query.value.id
+      expression  = lookup(metric_query.value, "expression", null)
+      label       = lookup(metric_query.value, "label", null)
+      return_data = lookup(metric_query.value, "return_data", null)
+      
+      dynamic "metric" {
+        for_each = lookup(metric_query.value, "metric", null) != null ? [metric_query.value.metric] : []
+        content {
+          dimensions = lookup(metric.value, "dimensions", [])
+          metric_name = metric.value.metric_name
+          namespace   = metric.value.namespace
+          period      = metric.value.period
+          stat        = metric.value.stat
+          unit        = lookup(metric.value, "unit", null)
+        }
+      }
+    }
+  }
+
+  tags = merge(
+    local.common_tags,
+    lookup(var.cloudwatch_alarms[count.index], "tags", {})
+  )
 }
 
 # =============================================================================

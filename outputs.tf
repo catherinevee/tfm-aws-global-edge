@@ -21,6 +21,50 @@ output "common_tags" {
 }
 
 # =============================================================================
+# ACM Certificate Outputs
+# =============================================================================
+
+output "acm_certificate_arn" {
+  description = "ARN of the ACM certificate"
+  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].arn : null
+}
+
+output "acm_certificate_id" {
+  description = "ID of the ACM certificate"
+  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].id : null
+}
+
+output "acm_certificate_domain_name" {
+  description = "Domain name of the ACM certificate"
+  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].domain_name : null
+}
+
+output "acm_certificate_status" {
+  description = "Status of the ACM certificate"
+  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].status : null
+}
+
+output "acm_certificate_validation_method" {
+  description = "Validation method of the ACM certificate"
+  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].validation_method : null
+}
+
+output "acm_certificate_subject_alternative_names" {
+  description = "Subject alternative names of the ACM certificate"
+  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].subject_alternative_names : []
+}
+
+output "acm_certificate_validation_records" {
+  description = "Validation records for the ACM certificate"
+  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null && var.ssl_certificate_validation_method == "DNS" && var.enable_route53 ? aws_route53_record.certificate_validation : {}
+}
+
+output "acm_certificate_validation_status" {
+  description = "Validation status of the ACM certificate"
+  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null && var.ssl_certificate_validation_method == "DNS" && var.enable_route53 ? aws_acm_certificate_validation.main[0].certificate_arn : null
+}
+
+# =============================================================================
 # CloudFront Outputs
 # =============================================================================
 
@@ -64,6 +108,21 @@ output "cloudfront_distribution_in_progress_validation_batches" {
   value       = var.enable_cloudfront ? aws_cloudfront_distribution.main[0].in_progress_validation_batches : null
 }
 
+output "cloudfront_distribution_comment" {
+  description = "Comment of the CloudFront distribution"
+  value       = var.enable_cloudfront ? aws_cloudfront_distribution.main[0].comment : null
+}
+
+output "cloudfront_distribution_http_version" {
+  description = "HTTP version of the CloudFront distribution"
+  value       = var.enable_cloudfront ? aws_cloudfront_distribution.main[0].http_version : null
+}
+
+output "cloudfront_distribution_price_class" {
+  description = "Price class of the CloudFront distribution"
+  value       = var.enable_cloudfront ? aws_cloudfront_distribution.main[0].price_class : null
+}
+
 # =============================================================================
 # WAF Outputs
 # =============================================================================
@@ -91,6 +150,11 @@ output "waf_web_acl_description" {
 output "waf_web_acl_capacity" {
   description = "Capacity of the WAF Web ACL"
   value       = var.enable_waf ? aws_wafv2_web_acl.main[0].capacity : null
+}
+
+output "waf_web_acl_scope" {
+  description = "Scope of the WAF Web ACL"
+  value       = var.enable_waf ? aws_wafv2_web_acl.main[0].scope : null
 }
 
 # =============================================================================
@@ -130,6 +194,11 @@ output "global_accelerator_ip_sets" {
 output "global_accelerator_enabled" {
   description = "Whether the Global Accelerator is enabled"
   value       = var.enable_global_accelerator ? aws_globalaccelerator_accelerator.main[0].enabled : null
+}
+
+output "global_accelerator_ip_address_type" {
+  description = "IP address type of the Global Accelerator"
+  value       = var.enable_global_accelerator ? aws_globalaccelerator_accelerator.main[0].ip_address_type : null
 }
 
 output "global_accelerator_listener_ids" {
@@ -191,38 +260,14 @@ output "route53_record_types" {
   value       = var.enable_route53 ? aws_route53_record.main[*].type : []
 }
 
-# =============================================================================
-# ACM Certificate Outputs
-# =============================================================================
-
-output "acm_certificate_arn" {
-  description = "ARN of the ACM certificate"
-  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].arn : null
+output "route53_health_check_ids" {
+  description = "IDs of the Route 53 health checks"
+  value       = var.enable_route53 ? aws_route53_health_check.main[*].id : []
 }
 
-output "acm_certificate_id" {
-  description = "ID of the ACM certificate"
-  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].id : null
-}
-
-output "acm_certificate_domain_name" {
-  description = "Domain name of the ACM certificate"
-  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].domain_name : null
-}
-
-output "acm_certificate_status" {
-  description = "Status of the ACM certificate"
-  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].status : null
-}
-
-output "acm_certificate_validation_method" {
-  description = "Validation method of the ACM certificate"
-  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].validation_method : null
-}
-
-output "acm_certificate_subject_alternative_names" {
-  description = "Subject alternative names of the ACM certificate"
-  value       = var.enable_ssl_certificate && var.ssl_certificate_domain != null ? aws_acm_certificate.main[0].subject_alternative_names : []
+output "route53_health_check_arns" {
+  description = "ARNs of the Route 53 health checks"
+  value       = var.enable_route53 ? aws_route53_health_check.main[*].arn : []
 }
 
 # =============================================================================
@@ -304,7 +349,8 @@ output "summary" {
       (var.enable_ssl_certificate && var.ssl_certificate_domain != null ? 1 : 0) +
       (var.enable_shield && var.shield_protection_arn != null ? 1 : 0) +
       (var.enable_monitoring ? length(var.cloudwatch_alarms) : 0) +
-      (var.enable_monitoring && var.enable_cloudfront ? 3 : 0)
+      (var.enable_monitoring && var.enable_cloudfront ? 3 : 0) +
+      (var.enable_route53 ? length(var.route53_health_checks) : 0)
     )
   }
 }
@@ -315,5 +361,48 @@ output "endpoints" {
     cloudfront_domain = var.enable_cloudfront ? aws_cloudfront_distribution.main[0].domain_name : null
     global_accelerator_dns = var.enable_global_accelerator ? aws_globalaccelerator_accelerator.main[0].dns_name : null
     route53_zone_name = var.enable_route53 && var.route53_domain_name != "" ? aws_route53_zone.main[0].name : null
+  }
+}
+
+output "configuration_summary" {
+  description = "Summary of configuration parameters"
+  value = {
+    cloudfront_configuration = {
+      enabled = var.enable_cloudfront
+      price_class = var.cloudfront_price_class
+      http_version = var.cloudfront_http_version
+      ssl_support_method = var.cloudfront_ssl_support_method
+      geo_restrictions = var.cloudfront_geo_restrictions
+      custom_error_responses = var.cloudfront_custom_error_responses
+    }
+    waf_configuration = {
+      enabled = var.enable_waf
+      scope = var.waf_scope
+      default_action = var.waf_default_action
+      rules_count = length(var.waf_rules)
+    }
+    global_accelerator_configuration = {
+      enabled = var.enable_global_accelerator
+      ip_address_type = var.global_accelerator_ip_address_type
+      listeners_count = length(var.global_accelerator_listeners)
+      endpoint_groups_count = length(var.global_accelerator_endpoint_groups)
+    }
+    route53_configuration = {
+      enabled = var.enable_route53
+      domain_name = var.route53_domain_name
+      records_count = length(var.route53_records)
+      health_checks_count = length(var.route53_health_checks)
+    }
+    ssl_certificate_configuration = {
+      enabled = var.enable_ssl_certificate
+      domain = var.ssl_certificate_domain
+      validation_method = var.ssl_certificate_validation_method
+      subject_alternative_names_count = length(var.ssl_certificate_subject_alternative_names)
+    }
+    monitoring_configuration = {
+      enabled = var.enable_monitoring
+      alarms_count = length(var.cloudwatch_alarms)
+      access_logs_enabled = var.enable_access_logs
+    }
   }
 } 

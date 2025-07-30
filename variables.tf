@@ -48,6 +48,100 @@ variable "enable_cloudfront" {
   default     = true
 }
 
+variable "cloudfront_comment" {
+  description = "Comment for CloudFront distribution"
+  type        = string
+  default     = "Edge Network CloudFront Distribution"
+}
+
+variable "cloudfront_default_root_object" {
+  description = "Default root object for CloudFront distribution"
+  type        = string
+  default     = null
+}
+
+variable "cloudfront_http_version" {
+  description = "HTTP version for CloudFront distribution"
+  type        = string
+  default     = "http2"
+
+  validation {
+    condition     = contains(["http1.1", "http2", "http2and3", "http3"], var.cloudfront_http_version)
+    error_message = "HTTP version must be one of: http1.1, http2, http2and3, http3."
+  }
+}
+
+variable "cloudfront_retain_on_delete" {
+  description = "Whether to retain the CloudFront distribution on delete"
+  type        = bool
+  default     = false
+}
+
+variable "cloudfront_wait_for_deployment" {
+  description = "Whether to wait for CloudFront distribution deployment"
+  type        = bool
+  default     = true
+}
+
+variable "cloudfront_ssl_support_method" {
+  description = "SSL support method for CloudFront distribution"
+  type        = string
+  default     = "sni-only"
+
+  validation {
+    condition     = contains(["sni-only", "vip", "static-ip"], var.cloudfront_ssl_support_method)
+    error_message = "SSL support method must be one of: sni-only, vip, static-ip."
+  }
+}
+
+variable "cloudfront_logging_include_cookies" {
+  description = "Whether to include cookies in CloudFront access logs"
+  type        = bool
+  default     = false
+}
+
+variable "cloudfront_custom_error_responses" {
+  description = "Custom error responses for CloudFront distribution"
+  type = list(object({
+    error_code            = number
+    response_code         = optional(string)
+    response_page_path    = optional(string)
+    error_caching_min_ttl = optional(number)
+  }))
+  default = [
+    {
+      error_code         = 404
+      response_code      = "200"
+      response_page_path = "/index.html"
+    },
+    {
+      error_code         = 403
+      response_code      = "200"
+      response_page_path = "/index.html"
+    }
+  ]
+}
+
+variable "cloudfront_geo_restrictions" {
+  description = "Geo restrictions for CloudFront distribution"
+  type = object({
+    restriction_type = string
+    locations        = list(string)
+  })
+  default = null
+
+  validation {
+    condition = var.cloudfront_geo_restrictions == null || contains(["whitelist", "blacklist", "none"], var.cloudfront_geo_restrictions.restriction_type)
+    error_message = "Restriction type must be one of: whitelist, blacklist, none."
+  }
+}
+
+variable "cloudfront_tags" {
+  description = "Additional tags for CloudFront distribution"
+  type        = map(string)
+  default     = {}
+}
+
 variable "cloudfront_origins" {
   description = "List of CloudFront origins"
   type = list(object({
@@ -212,6 +306,28 @@ variable "global_accelerator_ip_address_type" {
   }
 }
 
+variable "global_accelerator_enabled" {
+  description = "Whether the Global Accelerator is enabled"
+  type        = bool
+  default     = true
+}
+
+variable "global_accelerator_attributes" {
+  description = "Attributes for Global Accelerator"
+  type = object({
+    flow_logs_enabled   = bool
+    flow_logs_s3_bucket = string
+    flow_logs_s3_prefix = string
+  })
+  default = null
+}
+
+variable "global_accelerator_tags" {
+  description = "Additional tags for Global Accelerator"
+  type        = map(string)
+  default     = {}
+}
+
 variable "global_accelerator_listeners" {
   description = "List of listeners for Global Accelerator"
   type = list(object({
@@ -284,6 +400,33 @@ variable "route53_domain_name" {
   }
 }
 
+variable "route53_health_checks" {
+  description = "List of Route 53 health checks to create"
+  type = list(object({
+    fqdn = optional(string)
+    port = optional(number)
+    type = string
+    resource_path = optional(string)
+    failure_threshold = optional(number, 3)
+    request_interval = optional(number, 30)
+    measure_latency = optional(bool, false)
+    invert_healthcheck = optional(bool, false)
+    child_healthchecks = optional(list(string))
+    child_health_threshold = optional(number)
+    cloudwatch_alarm_name = optional(string)
+    cloudwatch_alarm_region = optional(string)
+    insufficient_data_health_status = optional(string)
+    tags = optional(map(string), {})
+  }))
+  default = []
+}
+
+variable "route53_tags" {
+  description = "Additional tags for Route 53 resources"
+  type        = map(string)
+  default     = {}
+}
+
 variable "route53_records" {
   description = "List of Route 53 records to create"
   type = list(object({
@@ -335,6 +478,62 @@ variable "waf_description" {
   description = "Description of the WAF Web ACL"
   type        = string
   default     = "WAF Web ACL for edge network services"
+}
+
+variable "waf_scope" {
+  description = "Scope of the WAF Web ACL"
+  type        = string
+  default     = "CLOUDFRONT"
+
+  validation {
+    condition     = contains(["CLOUDFRONT", "REGIONAL"], var.waf_scope)
+    error_message = "WAF scope must be either CLOUDFRONT or REGIONAL."
+  }
+}
+
+variable "waf_default_action" {
+  description = "Default action for WAF Web ACL"
+  type = object({
+    type = string
+    custom_request_handling = optional(object({
+      insert_header = list(object({
+        name  = string
+        value = string
+      }))
+    }))
+    custom_response = optional(object({
+      response_code = number
+      response_header = list(object({
+        name  = string
+        value = string
+      }))
+      custom_response_body_key = optional(string)
+    }))
+  })
+  default = {
+    type = "ALLOW"
+  }
+
+  validation {
+    condition     = contains(["ALLOW", "BLOCK", "COUNT"], var.waf_default_action.type)
+    error_message = "Default action type must be one of: ALLOW, BLOCK, COUNT."
+  }
+}
+
+variable "waf_custom_response_bodies" {
+  description = "Custom response bodies for WAF Web ACL"
+  type = list(object({
+    key          = string
+    content_type = string
+    content      = string
+  }))
+  default = []
+}
+
+variable "waf_tags" {
+  description = "Additional tags for WAF Web ACL"
+  type        = map(string)
+  default     = {}
 }
 
 variable "waf_rules" {
@@ -398,16 +597,6 @@ variable "waf_rules" {
       }
     }
   ]
-}
-
-variable "waf_default_action" {
-  description = "Default action for WAF Web ACL"
-  type = object({
-    allow = object({})
-  })
-  default = {
-    allow = {}
-  }
 }
 
 variable "waf_visibility_config" {
@@ -521,6 +710,67 @@ variable "ssl_certificate_subject_alternative_names" {
   description = "Subject alternative names for SSL certificate"
   type        = list(string)
   default     = []
+}
+
+variable "ssl_certificate_authority_arn" {
+  description = "ARN of the certificate authority for the certificate"
+  type        = string
+  default     = null
+}
+
+variable "ssl_certificate_body" {
+  description = "Certificate body for imported certificate"
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "ssl_certificate_chain" {
+  description = "Certificate chain for imported certificate"
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "ssl_certificate_private_key" {
+  description = "Private key for imported certificate"
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "ssl_certificate_key_algorithm" {
+  description = "Key algorithm for the certificate"
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.ssl_certificate_key_algorithm == null || contains(["RSA_1024", "RSA_2048", "RSA_3072", "RSA_4096", "EC_prime256v1", "EC_secp384r1", "EC_secp521r1"], var.ssl_certificate_key_algorithm)
+    error_message = "Key algorithm must be one of: RSA_1024, RSA_2048, RSA_3072, RSA_4096, EC_prime256v1, EC_secp384r1, EC_secp521r1."
+  }
+}
+
+variable "ssl_certificate_transparency_logging_preference" {
+  description = "Certificate transparency logging preference"
+  type        = string
+  default     = "ENABLED"
+
+  validation {
+    condition     = contains(["ENABLED", "DISABLED"], var.ssl_certificate_transparency_logging_preference)
+    error_message = "Certificate transparency logging preference must be either ENABLED or DISABLED."
+  }
+}
+
+variable "ssl_certificate_validation_timeout" {
+  description = "Timeout for certificate validation"
+  type        = string
+  default     = "45m"
+}
+
+variable "ssl_certificate_tags" {
+  description = "Additional tags for SSL certificate"
+  type        = map(string)
+  default     = {}
 }
 
 # =============================================================================
