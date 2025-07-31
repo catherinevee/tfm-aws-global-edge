@@ -150,7 +150,7 @@ resource "aws_wafv2_web_acl" "main" {
       dynamic "action" {
         for_each = [rule.value.action]
         content {
-          dynamic "allow" {
+        dynamic "allow" {
             for_each = action.value.type == "ALLOW" ? [action.value] : []
             content {
               dynamic "custom_request_handling" {
@@ -166,8 +166,8 @@ resource "aws_wafv2_web_acl" "main" {
                 }
               }
             }
-          }
-          dynamic "block" {
+        }
+        dynamic "block" {
             for_each = action.value.type == "BLOCK" ? [action.value] : []
             content {
               dynamic "custom_response" {
@@ -185,8 +185,8 @@ resource "aws_wafv2_web_acl" "main" {
                 }
               }
             }
-          }
-          dynamic "count" {
+        }
+        dynamic "count" {
             for_each = action.value.type == "COUNT" ? [action.value] : []
             content {
               dynamic "custom_request_handling" {
@@ -523,7 +523,7 @@ resource "aws_wafv2_web_acl" "main" {
                    priority = text_transformation.value.priority
                    type     = text_transformation.value.type
                  }
-               }
+              }
             }
           }
         }
@@ -795,9 +795,9 @@ resource "aws_globalaccelerator_accelerator" "main" {
   dynamic "attributes" {
     for_each = var.global_accelerator_attributes == null ? [1] : []
     content {
-      flow_logs_enabled   = true
-      flow_logs_s3_bucket = var.access_logs_bucket
-      flow_logs_s3_prefix = "global-accelerator-logs"
+    flow_logs_enabled   = true
+    flow_logs_s3_bucket = var.access_logs_bucket
+    flow_logs_s3_prefix = "global-accelerator-logs"
     }
   }
 
